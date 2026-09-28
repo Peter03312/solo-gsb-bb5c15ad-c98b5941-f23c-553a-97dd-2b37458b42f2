@@ -472,3 +472,43 @@ button.primary:hover:not(:disabled) { background: var(--accent-dark); }
   border-radius: 8px;
   padding: 9px 12px;
 }
+
+/* 印刷抽检清单面板 */
+.inspection-card { margin-top: 18px; }
+.inspection-card h2 { margin: 0 0 6px; font-size: 16px; }
+.inspection-card .hint { margin: 0 0 12px; }
+.inspection-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.inspection-controls label { font-weight: 600; font-size: 14px; }
+.inspection-controls input {
+  width: 150px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+}
+#inspectionInfo { font-size: 13px; }
+#inspectionInfo p { margin: 0 0 8px; }
+.insp-alloc {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.insp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.insp-table th,
+.insp-table td {
+  border: 1px solid var(--border);
+  padding: 7px 9px;
+  text-align: left;
+  white-space: nowrap;
+}
+.insp-table th { background: #f1f5f9; font-size: 12px; color: var(--muted); }
