@@ -18,6 +18,7 @@ const {
   comparePlateReuse,
 } = require('./src/imposition');
 const { planStockCutting, buildStockCuttingCsv } = require('./src/cutting');
+const { planInspection } = require('./src/sampling');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -227,6 +228,24 @@ app.post('/api/cutting/csv', (req, res) => {
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="stock-cutting.csv"');
   res.send(result.csv);
+});
+
+/**
+ * 印刷抽检清单：拼版须通过服务端校验（结构非法或拼版有错即拒绝）；
+ * 抽检数 count 须为整数且范围为帖数（单帖视为一帖）至实体纸张总数；
+ * 每帖先分一个名额，其余名额按各帖剩余纸张数比例用最大余数法分配
+ * （余数相同帖号小者优先，且不超过该帖纸张数），帖内按中位张 / 等距规则选纸。
+ */
+app.post('/api/inspection/plan', (req, res) => {
+  const body = req.body || {};
+  const plan = planInspection(body.state, body.count);
+  if (!plan) {
+    return res.status(400).json({ error: '拼版数据格式不正确' });
+  }
+  if (plan.error) {
+    return res.status(400).json({ error: plan.error, errors: plan.errors });
+  }
+  res.json(plan);
 });
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));

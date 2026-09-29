@@ -53,6 +53,11 @@ const els = {
   cutCsvBtn: document.getElementById('cutCsvBtn'),
   cutInfo: document.getElementById('cutInfo'),
   cutResult: document.getElementById('cutResult'),
+  inspectCount: document.getElementById('inspectCount'),
+  inspectBtn: document.getElementById('inspectBtn'),
+  inspectInfo: document.getElementById('inspectInfo'),
+  inspectResult: document.getElementById('inspectResult'),
+  inspectList: document.getElementById('inspectList'),
   summary: document.getElementById('summary'),
   sheets: document.getElementById('sheets'),
   errors: document.getElementById('errors'),
@@ -85,6 +90,8 @@ let cutRows = [ // 原纸录入行（页面表格的唯一数据源）
 ];
 let cutPlan = null; // 最近一次选配结果 { plan, baseStateJson, baseInput }（拼版或输入变化后失效）
 let cutDemandTouched = false; // 需求量是否被手动改过（手动值优先，不随拼版自动覆盖）
+let inspectionData = null; // 最近一次抽检清单 { plan, baseStateJson, baseCount }（拼版或抽检数变化后失效）
+let currentValid = false; // 当前拼版是否已通过最近一次服务端校验（用于控制抽检等按钮）
 const BASELINE_STORAGE_KEY = 'plateReuseBaseline';
 
 async function api(path, body) {
@@ -451,11 +458,13 @@ async function validateNow() {
   if (!state) return;
   try {
     const result = await api('/api/validate', state);
+    currentValid = result.valid;
     renderErrors(result);
     markSlotErrors(result.slotErrors || []);
     els.exportBtn.disabled = !result.valid;
     els.proofBtn.disabled = !result.valid;
   } catch (e) {
+    currentValid = false;
     els.errors.innerHTML = '';
     const p = document.createElement('p');
     p.className = 'muted';
@@ -747,6 +756,7 @@ function refreshReprint() {
   refreshReprintRun();
   refreshReuse();
   refreshCutting();
+  refreshInspection();
 }
 
 /* ---------- 补印生产单（按页份数核算） ---------- */
@@ -1349,6 +1359,157 @@ async function downloadCuttingCsv() {
   URL.revokeObjectURL(url);
 }
 
+/* ---------- 印刷抽检 ---------- */
+
+/** 当前拼版的帖数（单帖视为一帖） */
+function inspectionSigCount() {
+  if (!state) return null;
+  return layout === 'multi' ? state.signatureCount : 1;
+}
+
+/** 生成抽检清单：服务端校验当前拼版与抽检数，按帖返回名额分配与不重复的纸张清单 */
+async function generateInspection() {
+  if (!state) {
+    inspectionData = null;
+    renderInspectionMessage('muted', '请先生成拼版。');
+    return;
+  }
+  const raw = els.inspectCount.value.trim();
+  const count = Number(raw);
+  if (raw === '' || !Number.isInteger(count)) {
+    inspectionData = null;
+    renderInspectionMessage('reprint-err', '抽检数必须为整数，请重新输入。');
+    renderInspectionPlan(null);
+    return;
+  }
+  const sigCount = inspectionSigCount();
+  if (count < sigCount || count > state.sheetCount) {
+    inspectionData = null;
+    renderInspectionMessage(
+      'reprint-err',
+      `抽检数范围为帖数 ${sigCount} 至实体纸张总数 ${state.sheetCount}（单帖视为一帖），当前为 ${count}。`
+    );
+    renderInspectionPlan(null);
+    return;
+  }
+  try {
+    const data = await api('/api/inspection/plan', { state, count });
+    inspectionData = {
+      plan: data,
+      baseStateJson: JSON.stringify(state), // 生成清单时的拼版快照，用于检测后续改动
+      baseCount: count,
+    };
+    renderInspectionMessage(
+      'reprint-ok',
+      `本次抽检 ${data.count} 张实体纸（共 ${data.totalSheets} 张、${data.signatureCount} 帖），每张纸检查正反两面的左右版位，空白版位照实显示：`
+    );
+    renderInspectionPlan(data);
+  } catch (e) {
+    inspectionData = null;
+    renderInspectionMessage('reprint-err', e.message);
+    renderInspectionPlan(null);
+  }
+}
+
+function renderInspectionMessage(cls, text) {
+  els.inspectInfo.innerHTML = '';
+  const p = document.createElement('p');
+  p.className = cls;
+  p.textContent = text;
+  els.inspectInfo.appendChild(p);
+}
+
+/** 渲染各帖名额分配 + 抽检纸张清单（帖号、纸张序号、正反左右页码 / 空白） */
+function renderInspectionPlan(plan) {
+  els.inspectResult.innerHTML = '';
+  els.inspectList.innerHTML = '';
+  if (!plan) return;
+
+  // 各帖名额分配表
+  const table = document.createElement('table');
+  table.className = 'cut-result-table inspection-quota-table';
+  const thead = document.createElement('thead');
+  thead.innerHTML = '<tr><th>帖号</th><th>本帖纸张数</th><th>抽检名额</th><th>选中纸张序号</th></tr>';
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  for (const q of plan.quotas) {
+    const tr = document.createElement('tr');
+    for (const c of [
+      String(q.sig),
+      String(q.sheets),
+      String(q.quota),
+      q.selected.join('、'),
+    ]) {
+      const td = document.createElement('td');
+      td.textContent = c;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  els.inspectResult.appendChild(table);
+
+  // 抽检纸张清单（双面）
+  for (const s of plan.sheets) {
+    const li = document.createElement('li');
+    li.className = 'reprint-sheet';
+
+    const head = document.createElement('div');
+    head.className = 'reprint-sheet-head';
+    const where = document.createElement('strong');
+    where.textContent = `第 ${s.sig} 帖 · 第 ${s.sheet} 张纸`;
+    head.appendChild(where);
+    if (state.creep && typeof s.creep === 'number') {
+      const creep = document.createElement('span');
+      creep.className = 'reprint-hit';
+      creep.textContent = `爬移 ${s.creep.toFixed(2)} mm`;
+      head.appendChild(creep);
+    }
+
+    const slots = document.createElement('div');
+    slots.className = 'reprint-slots';
+    for (const side of ['front', 'back']) {
+      const row = document.createElement('span');
+      row.textContent =
+        `${SIDE_LABEL[side]}：左版 ${valueLabel(s[side].left)} · 右版 ${valueLabel(s[side].right)}`;
+      slots.appendChild(row);
+    }
+    li.append(head, slots);
+    els.inspectList.appendChild(li);
+  }
+}
+
+/** 拼版变化后同步抽检区：刷新输入范围 / 按钮；旧清单基于的拼版已变化时立即失效 */
+function refreshInspection() {
+  const sigCount = inspectionSigCount();
+  if (!state) {
+    inspectionData = null;
+    els.inspectBtn.disabled = true;
+    els.inspectCount.value = '';
+    els.inspectCount.min = 1;
+    els.inspectCount.removeAttribute('max');
+    els.inspectCount.placeholder = '请先生成拼版';
+    els.inspectList.innerHTML = '';
+    els.inspectResult.innerHTML = '';
+    els.inspectInfo.innerHTML = '<p class="muted">请先生成拼版。</p>';
+    return;
+  }
+  els.inspectBtn.disabled = !currentValid;
+  els.inspectCount.min = sigCount;
+  els.inspectCount.max = state.sheetCount;
+  els.inspectCount.placeholder = `${sigCount}～${state.sheetCount}`;
+  if (inspectionData && JSON.stringify(state) !== inspectionData.baseStateJson) {
+    inspectionData = null;
+    renderInspectionPlan(null);
+    renderInspectionMessage(
+      'muted',
+      currentValid
+        ? '拼版已变化，旧抽检清单已失效，请重新点击「生成抽检清单」。'
+        : '当前拼版未通过校验，校验通过后才能生成抽检清单。'
+    );
+  }
+}
+
 /* ---------- 导出 ---------- */
 
 /** 下载结果文件（CSV / 打样 HTML）的通用逻辑 */
@@ -1479,6 +1640,20 @@ for (const id of ['cutSheetW', 'cutSheetH', 'cutTrim', 'cutKerf']) {
 }
 els.cutFold.addEventListener('change', () => invalidateCutting('输入已修改，请重新点击「计算选配」。'));
 
+/* 印刷抽检 */
+els.inspectBtn.addEventListener('click', generateInspection);
+els.inspectCount.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') generateInspection();
+});
+els.inspectCount.addEventListener('input', () => {
+  // 抽检数已修改：旧清单失效，需重新生成
+  inspectionData = null;
+  renderInspectionPlan(null);
+  if (state) {
+    renderInspectionMessage('muted', '抽检数已修改，请点击「生成抽检清单」。');
+  }
+});
+
 setLayout('single');
 updateModeUI();
 loadBaseline();
@@ -1486,3 +1661,4 @@ renderBaselineInfo();
 refreshReuse();
 renderCutRows();
 refreshCutting();
+refreshInspection();
